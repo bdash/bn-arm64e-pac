@@ -4,20 +4,21 @@ use binaryninja::{
     low_level_il::{
         LowLevelILRegister,
         expression::{
-            ExpressionHandler, LowLevelILExpression, LowLevelILExpressionKind, ValueExpr,
+            ExpressionHandler, LowLevelILExpression, ValueExpr,
         },
         function::{FunctionForm, FunctionMutability},
         instruction::{
-            InstructionHandler, LowLevelILInstruction, LowLevelILInstructionKind,
+            InstructionHandler, LowLevelILInstruction,
             LowLevelInstructionIndex,
         },
         lifting::LowLevelILLabel,
-        operation::{self, Operation},
     },
     rc::Ref,
     workflow::{Activity, AnalysisContext, Workflow},
 };
 use log::LevelFilter;
+
+mod llil;
 
 const ARM64E_PAC_ACTIVITY_NAME: &str = "bdash.arm64e-pac";
 const ARM64E_PAC_ACTIVITY_CONFIG: &str = r#"{
@@ -32,10 +33,10 @@ const ARM64E_PAC_ACTIVITY_CONFIG: &str = r#"{
 // Match `if ((<reg> & 0x40000000) == 0)`
 // Returns `<reg>` and the operation coresponding to the `if`.
 fn candidate_pac_check_register_from_if<'func, A, M, F>(
-    instr: &LowLevelILInstruction<'func, A, M, F>,
+    instr: &'func LowLevelILInstruction<'func, A, M, F>,
 ) -> Option<(
     LowLevelILRegister<A::Register>,
-    Operation<'func, A, M, F, operation::If>,
+    LowLevelILInstruction<'func, A, M, F>,
 )>
 where
     A: 'func + Architecture,
@@ -44,32 +45,25 @@ where
     LowLevelILInstruction<'func, A, M, F>: InstructionHandler<'func, A, M, F>,
     LowLevelILExpression<'func, A, M, F, ValueExpr>: ExpressionHandler<'func, A, M, F>,
 {
-    let LowLevelILInstructionKind::If(if_op) = instr.kind() else {
+    use llil::{BinaryExpression, Expression::*, Instruction::*};
+    let If(CmpE(cmp), true_target, ..) = instr.into() else {
         return None;
     };
 
-    use LowLevelILExpressionKind::*;
-    let CmpE(cmp_e_op) = if_op.condition().kind() else {
+    let BinaryExpression(And(and), Const(0)) = *cmp else {
         return None;
     };
-    let (And(expr_op), Const(const_op)) = (cmp_e_op.left().kind(), cmp_e_op.right().kind()) else {
+
+    let BinaryExpression(Reg(reg), Const(0x40000000)) = *and else {
         return None;
     };
-    if const_op.value() != 0 {
-        return None;
-    }
-    let (Reg(reg_op), Const(const_op)) = (expr_op.left().kind(), expr_op.right().kind()) else {
-        return None;
-    };
-    if const_op.value() != 0x40000000 {
-        return None;
-    }
-    return Some((reg_op.source_reg(), if_op));
+
+    return Some((reg, true_target));
 }
 
 // Match `<reg_a> = <reg_b> ^ (<reg_b> << 1)`
 fn is_explicit_pac_check<'func, A, M, F>(
-    instr: &LowLevelILInstruction<'func, A, M, F>,
+    instr: &'func LowLevelILInstruction<'func, A, M, F>,
     register: LowLevelILRegister<A::Register>,
 ) -> bool
 where
@@ -79,29 +73,21 @@ where
     LowLevelILInstruction<'func, A, M, F>: InstructionHandler<'func, A, M, F>,
     LowLevelILExpression<'func, A, M, F, ValueExpr>: ExpressionHandler<'func, A, M, F>,
 {
-    let LowLevelILInstructionKind::SetReg(set_reg_op) = instr.kind() else {
-        return false;
-    };
-    if set_reg_op.dest_reg() != register {
-        return false;
-    }
+    use llil::{BinaryExpression, Expression::*, Instruction::*};
 
-    use LowLevelILExpressionKind::*;
-    let Xor(xor_op) = set_reg_op.source_expr().kind() else {
-        return false;
+    let xor = match instr.into() {
+        SetReg(dest, Xor(xor)) if dest == register => xor,
+        _ => return false,
     };
-
-    let (Reg(left_op), Lsl(right_op)) = (xor_op.left().kind(), xor_op.right().kind()) else {
+  
+    let BinaryExpression(Reg(left_reg), Lsl(lsl)) = *xor else {
         return false;
     };
 
-    let (Reg(shifted_reg_op), Const(shift_amount_op)) =
-        (right_op.left().kind(), right_op.right().kind())
-    else {
-        return false;
+    match *lsl {
+        BinaryExpression(Reg(shifted_reg), Const(1)) => return left_reg == shifted_reg,
+        _ => return false,
     };
-
-    return shift_amount_op.value() == 1 && left_op.source_reg() == shifted_reg_op.source_reg();
 }
 
 fn process_arm64e_pac(analysis_context: &AnalysisContext) {
@@ -116,7 +102,7 @@ fn process_arm64e_pac(analysis_context: &AnalysisContext) {
                 continue;
             };
 
-            let Some((register, if_op)) = candidate_pac_check_register_from_if(&instr) else {
+            let Some((register, true_target)) = candidate_pac_check_register_from_if(&instr) else {
                 continue;
             };
             let Some(prev) =
@@ -134,7 +120,7 @@ fn process_arm64e_pac(analysis_context: &AnalysisContext) {
                 instr.address()
             );
 
-            if if_op.true_target().index == instr.index.next() {
+            if true_target.index == instr.index.next() {
                 // Branch target is next instruction so we can replace the `if` with a `nop`.
                 unsafe {
                     llil.replace_expression(instr.expr_idx(), llil.nop());
@@ -142,10 +128,10 @@ fn process_arm64e_pac(analysis_context: &AnalysisContext) {
             } else {
                 // Target is further afield so we replace the `if` with a `goto`.
                 let mut label = llil
-                    .label_for_address(if_op.true_target().address())
+                    .label_for_address(true_target.address())
                     .unwrap_or_else(|| {
                         let mut label = LowLevelILLabel::new();
-                        label.operand = if_op.true_target().index.0;
+                        label.operand = true_target.index.0;
                         label
                     });
                 unsafe {
