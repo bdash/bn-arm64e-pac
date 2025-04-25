@@ -1,16 +1,12 @@
 use binaryninja::{
     architecture::Architecture,
+    binary_view::BinaryViewExt as _,
     logger::Logger,
     low_level_il::{
         LowLevelILRegister,
-        expression::{
-            ExpressionHandler, LowLevelILExpression, ValueExpr,
-        },
+        expression::{ExpressionHandler, LowLevelILExpression, ValueExpr},
         function::{FunctionForm, FunctionMutability},
-        instruction::{
-            InstructionHandler, LowLevelILInstruction,
-            LowLevelInstructionIndex,
-        },
+        instruction::{InstructionHandler, LowLevelILInstruction, LowLevelInstructionIndex},
         lifting::LowLevelILLabel,
     },
     rc::Ref,
@@ -79,7 +75,7 @@ where
         SetReg(dest, Xor(xor)) if dest == register => xor,
         _ => return false,
     };
-  
+
     let BinaryExpression(Reg(left_reg), Lsl(lsl)) = *xor else {
         return false;
     };
@@ -95,56 +91,74 @@ fn process_arm64e_pac(analysis_context: &AnalysisContext) {
         return;
     };
 
-    let func = analysis_context.function();
-    for basic_block in &func.basic_blocks() {
-        for addr in basic_block.iter() {
-            let Some(instr) = llil.instruction_at(addr) else {
-                continue;
-            };
+    let mut did_update = false;
+    for idx in 0..=llil.instruction_count() {
+        let Some(instr) = llil.instruction_from_index(LowLevelInstructionIndex(idx as usize))
+        else {
+            continue;
+        };
 
-            let Some((register, true_target)) = candidate_pac_check_register_from_if(&instr) else {
-                continue;
-            };
-            let Some(prev) =
-                llil.instruction_from_index(LowLevelInstructionIndex(instr.index.0 - 1))
-            else {
-                continue;
-            };
-            if !is_explicit_pac_check(&prev, register) {
-                continue;
-            }
-
-            log::debug!(
-                "Disabling explicit PAC check at {:#0x}-{:#0x}",
-                prev.address(),
-                instr.address()
-            );
-
-            if true_target.index == instr.index.next() {
-                // Branch target is next instruction so we can replace the `if` with a `nop`.
-                unsafe {
-                    llil.replace_expression(instr.expr_idx(), llil.nop());
-                };
-            } else {
-                // Target is further afield so we replace the `if` with a `goto`.
-                let mut label = llil
-                    .label_for_address(true_target.address())
-                    .unwrap_or_else(|| {
-                        let mut label = LowLevelILLabel::new();
-                        label.operand = true_target.index.0;
-                        label
-                    });
-                unsafe {
-                    llil.replace_expression(prev.expr_idx(), llil.goto(&mut label));
-                };
-            }
-
-            // `xor` is always replaced with a `nop`.
-            unsafe {
-                llil.replace_expression(prev.expr_idx(), llil.nop());
-            }
-            llil.generate_ssa_form();
+        let Some((register, true_target)) = candidate_pac_check_register_from_if(&instr) else {
+            continue;
+        };
+        let Some(prev) = llil.instruction_from_index(LowLevelInstructionIndex(instr.index.0 - 1))
+        else {
+            continue;
+        };
+        if !is_explicit_pac_check(&prev, register) {
+            continue;
         }
+
+        log::debug!(
+            "Disabling explicit PAC check at {:#0x}-{:#0x}",
+            prev.address(),
+            instr.address()
+        );
+
+        if true_target.index == instr.index.next() {
+            // Branch target is next instruction so we can replace the `if` with a `nop`.
+            unsafe {
+                llil.replace_expression(instr.expr_idx(), llil.nop());
+            };
+        } else {
+            // Target is further afield so we replace the `if` with a `goto`.
+            let mut label = llil
+                .label_for_address(true_target.address())
+                .unwrap_or_else(|| {
+                    let mut label = LowLevelILLabel::new();
+                    label.operand = true_target.index.0;
+                    label
+                });
+            unsafe {
+                llil.replace_expression(instr.expr_idx(), llil.goto(&mut label));
+            };
+        }
+
+        // `xor` is always replaced with a `nop`.
+        unsafe {
+            llil.replace_expression(prev.expr_idx(), llil.nop());
+        }
+        did_update = true;
+
+        let tag_type = analysis_context
+            .view()
+            .tag_type_by_name("arm64e PAC")
+            .unwrap_or_else(|| {
+                analysis_context
+                    .view()
+                    .create_tag_type("arm64e PAC", "PAC")
+            });
+        analysis_context.function().add_tag(
+            &tag_type,
+            "Eliminated explicit pointer authentication check",
+            Some(prev.address()),
+            false,
+            None,
+        );
+    }
+
+    if did_update {
+        llil.generate_ssa_form();
     }
 
     analysis_context.set_lifted_il_function(&llil);
