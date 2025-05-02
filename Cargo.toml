@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 binaryninja = { git = "https://github.com/Vector35/binaryninja-api.git", branch = "dev" }
+bn-bdash-extras = { git = "https://github.com/bdash/bn-bdash-extras.git", branch = "dev" }
 itertools = "0.13"
 log = "0.4"
 

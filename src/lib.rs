@@ -12,19 +12,16 @@ use binaryninja::{
     rc::Ref,
     workflow::{Activity, AnalysisContext, Workflow},
 };
-use log::LevelFilter;
-
-mod llil;
+use bn_bdash_extras::{activity, llil};
 
 const ARM64E_PAC_ACTIVITY_NAME: &str = "bdash.arm64e-pac";
-const ARM64E_PAC_ACTIVITY_CONFIG: &str = r#"{
-    "name" : "bdash.arm64e-pac",
-    "title" : "Remove explicit arm64e PAC checks",
-    "description": "Remove the explicit arm64e pointer authentication checks the compiler emits prior to tail calls.",
-    "eligibility": {
-        "auto": {}
-    }
-}"#;
+
+fn tag_type_for_view(
+    view: &binaryninja::binary_view::BinaryView,
+) -> Ref<binaryninja::tags::TagType> {
+    view.tag_type_by_name("arm64e PAC")
+        .unwrap_or_else(|| view.create_tag_type("arm64e PAC", "PAC"))
+}
 
 // Match `if ((<reg> & 0x40000000) == 0)`
 // Returns `<reg>` and the operation coresponding to the `if`.
@@ -140,16 +137,8 @@ fn process_arm64e_pac(analysis_context: &AnalysisContext) {
         }
         did_update = true;
 
-        let tag_type = analysis_context
-            .view()
-            .tag_type_by_name("arm64e PAC")
-            .unwrap_or_else(|| {
-                analysis_context
-                    .view()
-                    .create_tag_type("arm64e PAC", "PAC")
-            });
         analysis_context.function().add_tag(
-            &tag_type,
+            &tag_type_for_view(&analysis_context.view()),
             "Eliminated explicit pointer authentication check",
             Some(prev.address()),
             false,
@@ -159,14 +148,18 @@ fn process_arm64e_pac(analysis_context: &AnalysisContext) {
 
     if did_update {
         llil.generate_ssa_form();
+        analysis_context.set_lifted_il_function(&llil);
     }
-
-    analysis_context.set_lifted_il_function(&llil);
 }
 
 fn register_activity(workflow: Ref<Workflow>) {
     let workflow = workflow.clone_to(workflow.name());
-    let activity = Activity::new_with_action(ARM64E_PAC_ACTIVITY_CONFIG, process_arm64e_pac);
+    let config = activity::Config::action(
+        ARM64E_PAC_ACTIVITY_NAME,
+        "Remove explicit arm64e PAC checks",
+        "Remove the explicit arm64e pointer authentication checks the compiler emits prior to tail calls",
+    );
+    let activity = Activity::new_with_action(&config, process_arm64e_pac);
     workflow.register_activity(&activity).unwrap();
     workflow.insert(
         "core.function.generateMediumLevelIL",
@@ -186,7 +179,7 @@ pub extern "C" fn CorePluginDependencies() {
 #[allow(non_snake_case)]
 pub extern "C" fn CorePluginInit() -> bool {
     Logger::new("arm64 PAC")
-        .with_level(LevelFilter::Debug)
+        .with_level(log::LevelFilter::Debug)
         .init();
 
     register_activity(Workflow::instance("core.function.metaAnalysis"));
