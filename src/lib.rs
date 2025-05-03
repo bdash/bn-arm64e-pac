@@ -148,11 +148,15 @@ fn process_arm64e_pac(analysis_context: &AnalysisContext) {
 
     if did_update {
         llil.generate_ssa_form();
-        analysis_context.set_lifted_il_function(&llil);
     }
 }
 
 fn register_activity(workflow: Ref<Workflow>) {
+    if !workflow.registered() {
+        log::warn!("Skipping activity registration for workflow {} as it is not registered", workflow.name());
+        return;
+    }
+
     let workflow = workflow.clone_to(workflow.name());
     let config = activity::Config::action(
         ARM64E_PAC_ACTIVITY_NAME,
