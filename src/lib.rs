@@ -1,9 +1,9 @@
 use binaryninja::{
-    architecture::Architecture,
+    architecture::CoreRegister,
     binary_view::BinaryViewExt as _,
     logger::Logger,
     low_level_il::{
-        LowLevelILRegister,
+        LowLevelILRegisterKind,
         expression::{ExpressionHandler, LowLevelILExpression, ValueExpr},
         function::{FunctionForm, FunctionMutability},
         instruction::{InstructionHandler, LowLevelILInstruction, LowLevelInstructionIndex},
@@ -25,18 +25,17 @@ fn tag_type_for_view(
 
 // Match `if ((<reg> & 0x40000000) == 0)`
 // Returns `<reg>` and the operation coresponding to the `if`.
-fn candidate_pac_check_register_from_if<'func, A, M, F>(
-    instr: &'func LowLevelILInstruction<'func, A, M, F>,
+fn candidate_pac_check_register_from_if<'func, M, F>(
+    instr: &'func LowLevelILInstruction<'func, M, F>,
 ) -> Option<(
-    LowLevelILRegister<A::Register>,
-    LowLevelILInstruction<'func, A, M, F>,
+    LowLevelILRegisterKind<CoreRegister>,
+    LowLevelILInstruction<'func, M, F>,
 )>
 where
-    A: 'func + Architecture,
     M: FunctionMutability,
     F: FunctionForm,
-    LowLevelILInstruction<'func, A, M, F>: InstructionHandler<'func, A, M, F>,
-    LowLevelILExpression<'func, A, M, F, ValueExpr>: ExpressionHandler<'func, A, M, F>,
+    LowLevelILInstruction<'func, M, F>: InstructionHandler<'func, M, F>,
+    LowLevelILExpression<'func, M, F, ValueExpr>: ExpressionHandler<'func, M, F>,
 {
     use llil::{BinaryExpression, Expression::*, Instruction::*};
     let If(CmpE(cmp), true_target, ..) = instr.into() else {
@@ -55,16 +54,15 @@ where
 }
 
 // Match `<reg_a> = <reg_b> ^ (<reg_b> << 1)`
-fn is_explicit_pac_check<'func, A, M, F>(
-    instr: &'func LowLevelILInstruction<'func, A, M, F>,
-    register: LowLevelILRegister<A::Register>,
+fn is_explicit_pac_check<'func, M, F>(
+    instr: &'func LowLevelILInstruction<'func, M, F>,
+    register: LowLevelILRegisterKind<CoreRegister>,
 ) -> bool
 where
-    A: 'func + Architecture + std::fmt::Debug,
     M: FunctionMutability + std::fmt::Debug,
     F: FunctionForm + std::fmt::Debug,
-    LowLevelILInstruction<'func, A, M, F>: InstructionHandler<'func, A, M, F>,
-    LowLevelILExpression<'func, A, M, F, ValueExpr>: ExpressionHandler<'func, A, M, F>,
+    LowLevelILInstruction<'func, M, F>: InstructionHandler<'func, M, F>,
+    LowLevelILExpression<'func, M, F, ValueExpr>: ExpressionHandler<'func, M, F>,
 {
     use llil::{BinaryExpression, Expression::*, Instruction::*};
 
@@ -153,17 +151,20 @@ fn process_arm64e_pac(analysis_context: &AnalysisContext) {
 
 fn register_activity(workflow: Ref<Workflow>) {
     if !workflow.registered() {
-        log::warn!("Skipping activity registration for workflow {} as it is not registered", workflow.name());
+        log::warn!(
+            "Skipping activity registration for workflow {} as it is not registered",
+            workflow.name()
+        );
         return;
     }
 
-    let workflow = workflow.clone_to(workflow.name());
+    let workflow = workflow.clone_to(&workflow.name());
     let config = activity::Config::action(
         ARM64E_PAC_ACTIVITY_NAME,
         "Remove explicit arm64e PAC checks",
         "Remove the explicit arm64e pointer authentication checks the compiler emits prior to tail calls",
     );
-    let activity = Activity::new_with_action(&config, process_arm64e_pac);
+    let activity = Activity::new_with_action(&config.to_string(), process_arm64e_pac);
     workflow.register_activity(&activity).unwrap();
     workflow.insert(
         "core.function.generateMediumLevelIL",
