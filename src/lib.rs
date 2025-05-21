@@ -37,7 +37,12 @@ where
     LowLevelILInstruction<'func, M, F>: InstructionHandler<'func, M, F>,
     LowLevelILExpression<'func, M, F, ValueExpr>: ExpressionHandler<'func, M, F>,
 {
-    use llil::{BinaryExpression, Expression::*, Instruction::*};
+    use llil::{
+        BinaryExpression,
+        Expression::{And, CmpE, Const, Reg},
+        Instruction::If,
+    };
+
     let If(CmpE(cmp), true_target, ..) = instr.into() else {
         return None;
     };
@@ -46,11 +51,11 @@ where
         return None;
     };
 
-    let BinaryExpression(Reg(reg), Const(0x40000000)) = *and else {
+    let BinaryExpression(Reg(reg), Const(0x4000_0000)) = *and else {
         return None;
     };
 
-    return Some((reg, true_target));
+    Some((reg, true_target))
 }
 
 // Match `<reg_a> = <reg_b> ^ (<reg_b> << 1)`
@@ -64,7 +69,11 @@ where
     LowLevelILInstruction<'func, M, F>: InstructionHandler<'func, M, F>,
     LowLevelILExpression<'func, M, F, ValueExpr>: ExpressionHandler<'func, M, F>,
 {
-    use llil::{BinaryExpression, Expression::*, Instruction::*};
+    use llil::{
+        BinaryExpression,
+        Expression::{Const, Lsl, Reg, Xor},
+        Instruction::SetReg,
+    };
 
     let xor = match instr.into() {
         SetReg(dest, Xor(xor)) if dest == register => xor,
@@ -76,9 +85,9 @@ where
     };
 
     match *lsl {
-        BinaryExpression(Reg(shifted_reg), Const(1)) => return left_reg == shifted_reg,
-        _ => return false,
-    };
+        BinaryExpression(Reg(shifted_reg), Const(1)) => left_reg == shifted_reg,
+        _ => false,
+    }
 }
 
 fn process_arm64e_pac(analysis_context: &AnalysisContext) {
@@ -88,8 +97,7 @@ fn process_arm64e_pac(analysis_context: &AnalysisContext) {
 
     let mut did_update = false;
     for idx in 0..=llil.instruction_count() {
-        let Some(instr) = llil.instruction_from_index(LowLevelInstructionIndex(idx as usize))
-        else {
+        let Some(instr) = llil.instruction_from_index(LowLevelInstructionIndex(idx)) else {
             continue;
         };
 
@@ -149,7 +157,7 @@ fn process_arm64e_pac(analysis_context: &AnalysisContext) {
     }
 }
 
-fn register_activity(workflow: Ref<Workflow>) {
+fn register_activity(workflow: &Workflow) {
     if !workflow.registered() {
         log::warn!(
             "Skipping activity registration for workflow {} as it is not registered",
@@ -187,9 +195,9 @@ pub extern "C" fn CorePluginInit() -> bool {
         .with_level(log::LevelFilter::Debug)
         .init();
 
-    register_activity(Workflow::instance("core.function.metaAnalysis"));
-    register_activity(Workflow::instance("core.function.objectiveC"));
-    register_activity(Workflow::instance("core.function.sharedCache"));
+    register_activity(&Workflow::instance("core.function.metaAnalysis"));
+    register_activity(&Workflow::instance("core.function.objectiveC"));
+    register_activity(&Workflow::instance("core.function.sharedCache"));
 
     true
 }

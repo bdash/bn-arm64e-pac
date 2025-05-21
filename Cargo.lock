@@ -70,7 +70,7 @@ dependencies = [
 [[package]]
 name = "bn-bdash-extras"
 version = "0.1.0"
-source = "git+https://github.com/bdash/bn-bdash-extras.git?branch=dev#1aec10e31ab485c1814886360154470e03f9b0d0"
+source = "git+https://github.com/bdash/bn-bdash-extras.git?branch=dev#af3f3e646ad8eb3a4dcf5d8a818bfa4e3e71087c"
 dependencies = [
  "binaryninja",
  "itertools",

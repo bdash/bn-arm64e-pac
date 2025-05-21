@@ -18,3 +18,7 @@ build-override.debug = true
 
 [profile.release]
 panic = "abort"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
