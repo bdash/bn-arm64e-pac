@@ -159,7 +159,7 @@ fn process_arm64e_pac(analysis_context: &AnalysisContext) {
 
 fn register_activity(workflow: &Workflow) {
     if !workflow.registered() {
-        log::warn!(
+        log::debug!(
             "Skipping activity registration for workflow {} as it is not registered",
             workflow.name()
         );
@@ -185,7 +185,6 @@ fn register_activity(workflow: &Workflow) {
 pub extern "C" fn CorePluginDependencies() {
     use binaryninja::add_optional_plugin_dependency;
     add_optional_plugin_dependency("workflow_objc");
-    add_optional_plugin_dependency("sharedcache");
 }
 
 #[unsafe(no_mangle)]
@@ -197,7 +196,6 @@ pub extern "C" fn CorePluginInit() -> bool {
 
     register_activity(&Workflow::instance("core.function.metaAnalysis"));
     register_activity(&Workflow::instance("core.function.objectiveC"));
-    register_activity(&Workflow::instance("core.function.sharedCache"));
 
     true
 }
