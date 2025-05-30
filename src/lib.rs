@@ -1,18 +1,15 @@
 use binaryninja::{
-    architecture::CoreRegister,
     binary_view::BinaryViewExt as _,
     logger::Logger,
     low_level_il::{
-        LowLevelILRegisterKind,
-        expression::{ExpressionHandler, LowLevelILExpression, ValueExpr},
-        function::{FunctionForm, FunctionMutability},
-        instruction::{InstructionHandler, LowLevelILInstruction, LowLevelInstructionIndex},
+        function::{LowLevelILFunction, Mutable, NonSSA},
+        instruction::{LowLevelILInstruction, LowLevelInstructionIndex},
         lifting::LowLevelILLabel,
     },
     rc::Ref,
     workflow::{Activity, AnalysisContext, Workflow},
 };
-use bn_bdash_extras::{activity, llil};
+use bn_bdash_extras::{activity, llil::match_instr};
 
 const ARM64E_PAC_ACTIVITY_NAME: &str = "bdash.arm64e-pac";
 
@@ -23,71 +20,56 @@ fn tag_type_for_view(
         .unwrap_or_else(|| view.create_tag_type("arm64e PAC", "PAC"))
 }
 
-// Match `if ((<reg> & 0x40000000) == 0)`
-// Returns `<reg>` and the operation coresponding to the `if`.
-fn candidate_pac_check_register_from_if<'func, M, F>(
-    instr: &'func LowLevelILInstruction<'func, M, F>,
-) -> Option<(
-    LowLevelILRegisterKind<CoreRegister>,
-    LowLevelILInstruction<'func, M, F>,
-)>
-where
-    M: FunctionMutability,
-    F: FunctionForm,
-    LowLevelILInstruction<'func, M, F>: InstructionHandler<'func, M, F>,
-    LowLevelILExpression<'func, M, F, ValueExpr>: ExpressionHandler<'func, M, F>,
-{
-    use llil::{
-        BinaryExpression,
-        Expression::{And, CmpE, Const, Reg},
-        Instruction::If,
+fn process_instruction<'func>(
+    llil: &'func LowLevelILFunction<Mutable, NonSSA>,
+    instr: &'func LowLevelILInstruction<'func, Mutable, NonSSA>,
+) -> Option<u64> {
+    // Match `<dest> = <reg_b> ^ (<reg_b> << 1)`
+    let dest = match_instr! {
+        instr,
+        SetReg(dest, Xor(Reg(left_reg), Lsl(Reg(shifted_reg), Const(1))))
+            if left_reg == shifted_reg => *dest,
+        _ => return None,
     };
 
-    let If(CmpE(cmp), true_target, ..) = instr.into() else {
-        return None;
+    // Followed by `if ((<reg> & 0x40000000) == 0)`
+    let next = llil.instruction_from_index(instr.index.next())?;
+    let true_target = match_instr! {
+        next,
+        If(CmpE(And(Reg(reg), Const(0x4000_0000)), Const(0)), true_target, _)
+            if dest == reg => *true_target,
+        _ => return None,
     };
 
-    let BinaryExpression(And(and), Const(0)) = *cmp else {
-        return None;
-    };
+    log::debug!(
+        "Disabling explicit PAC check at {:#0x}-{:#0x}",
+        instr.address(),
+        next.address()
+    );
 
-    let BinaryExpression(Reg(reg), Const(0x4000_0000)) = *and else {
-        return None;
-    };
-
-    Some((reg, true_target))
-}
-
-// Match `<reg_a> = <reg_b> ^ (<reg_b> << 1)`
-fn is_explicit_pac_check<'func, M, F>(
-    instr: &'func LowLevelILInstruction<'func, M, F>,
-    register: LowLevelILRegisterKind<CoreRegister>,
-) -> bool
-where
-    M: FunctionMutability + std::fmt::Debug,
-    F: FunctionForm + std::fmt::Debug,
-    LowLevelILInstruction<'func, M, F>: InstructionHandler<'func, M, F>,
-    LowLevelILExpression<'func, M, F, ValueExpr>: ExpressionHandler<'func, M, F>,
-{
-    use llil::{
-        BinaryExpression,
-        Expression::{Const, Lsl, Reg, Xor},
-        Instruction::SetReg,
-    };
-
-    let xor = match instr.into() {
-        SetReg(dest, Xor(xor)) if dest == register => xor,
-        _ => return false,
-    };
-
-    let BinaryExpression(Reg(left_reg), Lsl(lsl)) = *xor else {
-        return false;
-    };
-
-    match *lsl {
-        BinaryExpression(Reg(shifted_reg), Const(1)) => left_reg == shifted_reg,
-        _ => false,
+    if true_target.index == instr.index.next() {
+        // Branch target is next instruction so we can replace the `if` with a `nop`.
+        unsafe {
+            llil.set_current_address(next.address());
+            llil.replace_expression(next.expr_idx(), llil.nop());
+        };
+    } else {
+        // Target is further afield so we replace the `if` with a `goto`.
+        let mut label = LowLevelILLabel::new();
+        label.operand = true_target.index.0;
+        unsafe {
+            llil.set_current_address(next.address());
+            llil.replace_expression(next.expr_idx(), llil.goto(&mut label));
+        };
     }
+
+    // `xor` is always replaced with a `nop`.
+    unsafe {
+        llil.set_current_address(instr.address());
+        llil.replace_expression(instr.expr_idx(), llil.nop());
+    }
+
+    Some(next.address())
 }
 
 fn process_arm64e_pac(analysis_context: &AnalysisContext) {
@@ -96,57 +78,21 @@ fn process_arm64e_pac(analysis_context: &AnalysisContext) {
     };
 
     let mut did_update = false;
-    for idx in 0..=llil.instruction_count() {
+    for idx in 0..llil.instruction_count() {
         let Some(instr) = llil.instruction_from_index(LowLevelInstructionIndex(idx)) else {
             continue;
         };
 
-        let Some((register, true_target)) = candidate_pac_check_register_from_if(&instr) else {
+        let Some(address) = process_instruction(&llil, &instr) else {
             continue;
         };
-        let Some(prev) = llil.instruction_from_index(LowLevelInstructionIndex(instr.index.0 - 1))
-        else {
-            continue;
-        };
-        if !is_explicit_pac_check(&prev, register) {
-            continue;
-        }
 
-        log::debug!(
-            "Disabling explicit PAC check at {:#0x}-{:#0x}",
-            prev.address(),
-            instr.address()
-        );
-
-        if true_target.index == instr.index.next() {
-            // Branch target is next instruction so we can replace the `if` with a `nop`.
-            unsafe {
-                llil.replace_expression(instr.expr_idx(), llil.nop());
-            };
-        } else {
-            // Target is further afield so we replace the `if` with a `goto`.
-            let mut label = llil
-                .label_for_address(true_target.address())
-                .unwrap_or_else(|| {
-                    let mut label = LowLevelILLabel::new();
-                    label.operand = true_target.index.0;
-                    label
-                });
-            unsafe {
-                llil.replace_expression(instr.expr_idx(), llil.goto(&mut label));
-            };
-        }
-
-        // `xor` is always replaced with a `nop`.
-        unsafe {
-            llil.replace_expression(prev.expr_idx(), llil.nop());
-        }
         did_update = true;
 
         analysis_context.function().add_tag(
             &tag_type_for_view(&analysis_context.view()),
             "Eliminated explicit pointer authentication check",
-            Some(prev.address()),
+            Some(address),
             false,
             None,
         );
