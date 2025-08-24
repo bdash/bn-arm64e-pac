@@ -7,11 +7,9 @@ use binaryninja::{
         lifting::LowLevelILLabel,
     },
     rc::Ref,
-    workflow::{Activity, AnalysisContext, Workflow},
+    workflow::{Activity, AnalysisContext, Workflow, WorkflowBuilder, activity},
 };
-use bn_bdash_extras::{activity, llil::match_instr};
-
-const ARM64E_PAC_ACTIVITY_NAME: &str = "bdash.arm64e-pac";
+use bn_bdash_extras::llil::match_instr;
 
 fn tag_type_for_view(
     view: &binaryninja::binary_view::BinaryView,
@@ -103,28 +101,26 @@ fn process_arm64e_pac(analysis_context: &AnalysisContext) {
     }
 }
 
-fn register_activity(workflow: &Workflow) {
-    if !workflow.registered() {
+fn register_activity(workflow: Option<WorkflowBuilder>) -> Result<(), ()> {
+    let Some(workflow) = workflow else {
         log::debug!(
-            "Skipping activity registration for workflow {} as it is not registered",
-            workflow.name()
+            "Skipping activity registration for arm64e PAC as target workflow is not registered"
         );
-        return;
-    }
+        return Err(());
+    };
 
-    let workflow = workflow.clone_to(&workflow.name());
-    let config = activity::Config::action(
-        ARM64E_PAC_ACTIVITY_NAME,
-        "Remove explicit arm64e PAC checks",
-        "Remove the explicit arm64e pointer authentication checks the compiler emits prior to tail calls",
+    let activity = Activity::new_with_action(
+        activity::Config::action(
+            "bdash.arm64e-pac",
+            "Remove explicit arm64e PAC checks",
+            "Remove the explicit arm64e pointer authentication checks the compiler emits prior to tail calls",
+        ),
+        process_arm64e_pac,
     );
-    let activity = Activity::new_with_action(&config.to_string(), process_arm64e_pac);
-    workflow.register_activity(&activity).unwrap();
-    workflow.insert(
-        "core.function.generateMediumLevelIL",
-        [ARM64E_PAC_ACTIVITY_NAME],
-    );
-    workflow.register().unwrap();
+    workflow
+        .activity_before(&activity, "core.function.generateMediumLevelIL")?
+        .register()?;
+    Ok(())
 }
 
 #[unsafe(no_mangle)]
@@ -140,8 +136,15 @@ pub extern "C" fn CorePluginInit() -> bool {
         .with_level(log::LevelFilter::Debug)
         .init();
 
-    register_activity(&Workflow::instance("core.function.metaAnalysis"));
-    register_activity(&Workflow::instance("core.function.objectiveC"));
+    let Ok(()) = register_activity(Workflow::cloned("core.function.metaAnalysis")) else {
+        log::warn!("Failed to register arm64e PAC activity in meta-analysis workflow");
+        return false;
+    };
+
+    if register_activity(Workflow::cloned("core.function.objectiveC")).is_err() {
+        // This is not fatal as the Objective-C worklow is going away real soon now.
+        log::debug!("Failed to register arm64e PAC activity in Objective-C workflow");
+    }
 
     true
 }
