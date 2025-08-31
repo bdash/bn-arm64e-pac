@@ -14,7 +14,7 @@ dependencies = [
 [[package]]
 name = "binaryninja"
 version = "0.1.0"
-source = "git+https://github.com/Vector35/binaryninja-api.git?branch=dev#eb09898c0ea423328d929dec4d1730030f99abe4"
+source = "git+https://github.com/Vector35/binaryninja-api.git?branch=dev#42fd7435e2713181facfc6d4f54b42bdaa1d2825"
 dependencies = [
  "binaryninjacore-sys",
  "log",
@@ -27,7 +27,7 @@ dependencies = [
 [[package]]
 name = "binaryninjacore-sys"
 version = "0.1.0"
-source = "git+https://github.com/Vector35/binaryninja-api.git?branch=dev#eb09898c0ea423328d929dec4d1730030f99abe4"
+source = "git+https://github.com/Vector35/binaryninja-api.git?branch=dev#42fd7435e2713181facfc6d4f54b42bdaa1d2825"
 dependencies = [
  "bindgen",
  "proc-macro2",
@@ -72,7 +72,7 @@ dependencies = [
 [[package]]
 name = "bn-bdash-extras"
 version = "0.1.0"
-source = "git+https://github.com/bdash/bn-bdash-extras.git?branch=dev#5e1370c39702da4ad28ea2bf17129b63e720c9c5"
+source = "git+https://github.com/bdash/bn-bdash-extras.git?branch=dev#8f16d683e87b216909870ea93673b556bbec96d8"
 dependencies = [
  "binaryninja",
  "bn-bdash-extras-macros",
@@ -85,7 +85,7 @@ dependencies = [
 [[package]]
 name = "bn-bdash-extras-macros"
 version = "0.1.0"
-source = "git+https://github.com/bdash/bn-bdash-extras.git?branch=dev#5e1370c39702da4ad28ea2bf17129b63e720c9c5"
+source = "git+https://github.com/bdash/bn-bdash-extras.git?branch=dev#8f16d683e87b216909870ea93673b556bbec96d8"
 dependencies = [
  "proc-macro2",
  "quote",
